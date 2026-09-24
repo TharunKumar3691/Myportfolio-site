@@ -64,7 +64,7 @@ P = {
     "future_shop_weight": 0.75,  # confidence in expected (not yet unlocked) shop demand
     "opp_weight": 1.0,           # weight on opponent projected supply
     "hold_margin": 0.06,         # hold stock only if projected price beats now by this
-    "labor_cost": 6.0,           # $ per unit action in valuations
+    "labor_cost": 10.0,           # $ per unit action in valuations
     "max_hands": 16,
     "actions_per_unit": 19.0,    # usable task actions per unit per day (rest = walking)
     "min_rate": 4.0,             # minimum $ / tile-day to commit a tile

@@ -74,7 +74,7 @@ P = {
     "mirror_days": 16.0,         # ... fading out by this day
     "tile_shadow": 12.0,         # $ per tile-day opportunity cost in planner scoring
     "hold": False,
-    "melon_cap": 99,
+    "melon_cap": 10,
     "melon_cap_until": 10,
     "alpha": 0.4,
     "plan_task_frac": 0.35,
@@ -100,7 +100,7 @@ P = {
     "land_free_max": 2,
     "land_margin": 250,
     "hold_cap": 25,
-    "disc": 0.04,                # daily discount rate on day 0 (reinvestment value of cash)
+    "disc": 0.0,                # daily discount rate on day 0 (reinvestment value of cash)
     "disc_until": 14.0,          # discounting fades out by this day
 }
 

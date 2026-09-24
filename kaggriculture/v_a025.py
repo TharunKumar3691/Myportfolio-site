@@ -74,9 +74,7 @@ P = {
     "mirror_days": 16.0,         # ... fading out by this day
     "tile_shadow": 12.0,         # $ per tile-day opportunity cost in planner scoring
     "hold": False,
-    "melon_cap": 99,
-    "melon_cap_until": 10,
-    "alpha": 0.4,
+    "alpha": 0.25,
     "plan_task_frac": 0.35,
     "fert_internal_value": 60.0,
     "build_value": 160.0,
@@ -636,10 +634,7 @@ def run_planner(s, orders, budget):
     while free and guard < 100:
         guard += 1
         best = None
-        n_melon = count_crop(s, "MELON") + sum(1 for o in MEM["plan"].values() if o == "MELON")
         for opt in OPTIONS:
-            if opt == "MELON" and s.day < P["melon_cap_until"] and n_melon >= P["melon_cap"]:
-                continue
             r = option_eval(s, opt, s.day, extra)
             if r is None:
                 continue
@@ -659,8 +654,6 @@ def run_planner(s, orders, budget):
             # try the best affordable option instead
             alt = None
             for opt2 in OPTIONS:
-                if opt2 == "MELON" and s.day < P["melon_cap_until"] and n_melon >= P["melon_cap"]:
-                    continue
                 r2 = option_eval(s, opt2, s.day, extra)
                 if r2 is None or r2[0] <= 0 or r2[3] + (wheat_p * 2 if opt2 in ANIMALS else 0) > budget:
                     continue
@@ -1324,10 +1317,6 @@ def _agent(obs):
     final_orders.extend(buys)
     final_orders = final_orders[:10]
     return {"farmer": actions[0], "hands": actions[1:], "market": final_orders}
-
-
-def count_crop(s, crop):
-    return sum(1 for row in s.tiles for t in row if isinstance(t, dict) and t.get("crop") == crop)
 
 
 def count_animals(s):

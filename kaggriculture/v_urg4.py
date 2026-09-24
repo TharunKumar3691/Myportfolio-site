@@ -87,7 +87,7 @@ P = {
     "eod_load": 85,
     "eod_hour": 12,
     "drop_risk_mult": 1.0,
-    "urgency": 2.0,
+    "urgency": 4.0,
     "work_mult": 1.4,
     "hire_base": 14,
     "opening": True,

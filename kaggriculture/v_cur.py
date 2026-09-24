@@ -74,10 +74,6 @@ P = {
     "mirror_days": 16.0,         # ... fading out by this day
     "tile_shadow": 12.0,         # $ per tile-day opportunity cost in planner scoring
     "hold": False,
-    "melon_cap": 99,
-    "melon_cap_until": 10,
-    "alpha": 0.4,
-    "plan_task_frac": 0.35,
     "fert_internal_value": 60.0,
     "build_value": 160.0,
     "place_value": 320.0,
@@ -216,7 +212,6 @@ def reset_mem():
     MEM.clear()
     MEM.update({
         "plan": {},            # (x,y) -> option name
-        "plan_val": {},        # (x,y) -> expected value of the plan entry
         "targets": {},         # unit idx -> (x,y)
         "last_step": -1,
         "opp_sales": {p: 0 for p in PRODUCTS},
@@ -636,10 +631,7 @@ def run_planner(s, orders, budget):
     while free and guard < 100:
         guard += 1
         best = None
-        n_melon = count_crop(s, "MELON") + sum(1 for o in MEM["plan"].values() if o == "MELON")
         for opt in OPTIONS:
-            if opt == "MELON" and s.day < P["melon_cap_until"] and n_melon >= P["melon_cap"]:
-                continue
             r = option_eval(s, opt, s.day, extra)
             if r is None:
                 continue
@@ -659,8 +651,6 @@ def run_planner(s, orders, budget):
             # try the best affordable option instead
             alt = None
             for opt2 in OPTIONS:
-                if opt2 == "MELON" and s.day < P["melon_cap_until"] and n_melon >= P["melon_cap"]:
-                    continue
                 r2 = option_eval(s, opt2, s.day, extra)
                 if r2 is None or r2[0] <= 0 or r2[3] + (wheat_p * 2 if opt2 in ANIMALS else 0) > budget:
                     continue
@@ -687,7 +677,6 @@ def run_planner(s, orders, budget):
             pos = cand[0]
         free.remove(pos)
         MEM["plan"][pos] = opt
-        MEM["plan_val"][pos] = max(0.0, r[0])
         budget -= cost
         if opt in ANIMALS:
             budget -= wheat_p * 2
@@ -762,27 +751,26 @@ def _gen_tasks(s):
         t = tile_at(s, pos)
         lst = []
         plan = MEM["plan"].get(pos)
-        pv = MEM["plan_val"].get(pos, 0.0) * P["plan_task_frac"]
         if t is None:
             if plan in CROPS:
                 if s.hour <= 21 and not last_day:
-                    lst.append(Task("PLANT", max(60.0, pv), "SEED:" + plan, plan))
+                    lst.append(Task("PLANT", 60.0, "SEED:" + plan, plan))
             elif plan in ANIMALS:
                 if not last_day:
                     op = "BUILD_COOP" if ANIMALS[plan]["structure"] == "COOP" else "BUILD_PASTURE"
-                    lst.append(Task(op, max(P["build_value"], pv)))
+                    lst.append(Task(op, P["build_value"]))
         elif isinstance(t, dict):
             k = t.get("kind")
             if k == "WEED":
                 if plan is not None:
-                    lst.append(Task("DIG", max(40.0, pv)))
+                    lst.append(Task("DIG", 40.0))
             elif k == "PLANT":
                 lst.extend(plant_tasks(s, t, fert_v))
             elif k in ("COOP", "PASTURE"):
                 if t.get("animal"):
                     lst.extend(animal_tasks(s, t, fert_v))
                 elif plan in ANIMALS and ANIMALS[plan]["structure"] == k and not last_day:
-                    lst.append(Task("PLACE", max(P["place_value"], pv), "ANIMAL:" + plan, plan))
+                    lst.append(Task("PLACE", P["place_value"], "ANIMAL:" + plan, plan))
         if lst:
             tasks[pos] = lst
     return tasks
@@ -1041,12 +1029,11 @@ def schedule(s, tasks):
                 if v_direct <= 0 and v_supply <= 0:
                     continue
                 d = dist(u["pos"], pos)
-                al = P["alpha"]
-                sc_direct = (v_direct ** al) / (d + nact + 0.5) if v_direct > 0 else 0
+                sc_direct = v_direct / (d + nact + 0.5) if v_direct > 0 else 0
                 if v_supply > 0:
                     acc = nearest_access(u["pos"])
                     d2 = dist(u["pos"], acc) + 1 + dist(acc, pos) + (len(needs) - 1)
-                    sc_sup = ((v_direct + v_supply) ** al) / (d2 + nact + 0.5)
+                    sc_sup = (v_direct + v_supply) / (d2 + nact + 0.5)
                 else:
                     sc_sup = 0
                 if d > turns_left:
@@ -1072,7 +1059,7 @@ def schedule(s, tasks):
                 v = P["drop_weight"] * gv + 15.0 * max(0, goods - P["drop_goods"])
                 if risk:
                     v += gv * P["drop_risk_mult"]
-                cand.append(((v ** P["alpha"]) / (d + 1.0), u["idx"], ("DROP", acc), ()))
+                cand.append((v / (d + 1.0), u["idx"], ("DROP", acc), ()))
         if fert_price >= P["deliver_min_price"] and s.day <= P["deliver_days"]:
             for u in free_units:
                 f = u["inv"].get("FERTILIZER", 0)
@@ -1080,7 +1067,7 @@ def schedule(s, tasks):
                     acc = nearest_access(u["pos"])
                     d = dist(u["pos"], acc)
                     v = P["deliver_weight"] * f * fert_price
-                    cand.append(((v ** P["alpha"]) / (d + 1.0), u["idx"], ("SHED", acc), ()))
+                    cand.append((v / (d + 1.0), u["idx"], ("SHED", acc), ()))
         cand.sort(key=lambda c: -c[0])
         assigned = {}
         used_pos = set()
@@ -1238,8 +1225,8 @@ def workload(s, tasks):
         if k:
             n += k
             tiles += 1
-    pending = sum(1 for pos in MEM["plan"] if pos not in tasks)
-    return n + tiles * 1.3 + pending * 2.5
+    # daily recurring work not yet visible (e.g. tomorrow's plants) ignored
+    return n + tiles * 1.3
 
 
 def hire_orders(s, tasks):
@@ -1324,10 +1311,6 @@ def _agent(obs):
     final_orders.extend(buys)
     final_orders = final_orders[:10]
     return {"farmer": actions[0], "hands": actions[1:], "market": final_orders}
-
-
-def count_crop(s, crop):
-    return sum(1 for row in s.tiles for t in row if isinstance(t, dict) and t.get("crop") == crop)
 
 
 def count_animals(s):

@@ -100,7 +100,7 @@ P = {
     "land_free_max": 2,
     "land_margin": 250,
     "hold_cap": 25,
-    "disc": 0.04,                # daily discount rate on day 0 (reinvestment value of cash)
+    "disc": 0.08,                # daily discount rate on day 0 (reinvestment value of cash)
     "disc_until": 14.0,          # discounting fades out by this day
 }
 

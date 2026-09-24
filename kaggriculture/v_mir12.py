@@ -70,7 +70,7 @@ P = {
     "min_rate": 4.0,             # minimum $ / tile-day to commit a tile
     "cash_reserve": 60,
     "fert_internal": True,
-    "mirror": 0.8,               # opponent mirrors this share of our new commitments
+    "mirror": 1.2,               # opponent mirrors this share of our new commitments
     "mirror_days": 16.0,         # ... fading out by this day
     "tile_shadow": 12.0,         # $ per tile-day opportunity cost in planner scoring
     "hold": False,

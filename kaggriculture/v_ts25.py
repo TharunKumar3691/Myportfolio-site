@@ -72,7 +72,7 @@ P = {
     "fert_internal": True,
     "mirror": 0.8,               # opponent mirrors this share of our new commitments
     "mirror_days": 16.0,         # ... fading out by this day
-    "tile_shadow": 12.0,         # $ per tile-day opportunity cost in planner scoring
+    "tile_shadow": 25.0,         # $ per tile-day opportunity cost in planner scoring
     "hold": False,
     "melon_cap": 99,
     "melon_cap_until": 10,

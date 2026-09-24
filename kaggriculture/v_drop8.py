@@ -82,7 +82,7 @@ P = {
     "build_value": 160.0,
     "place_value": 320.0,
     "pickup_min": 4,
-    "drop_goods": 20,
+    "drop_goods": 8,
     "drop_weight": 0.3,
     "eod_load": 85,
     "eod_hour": 12,

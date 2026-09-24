@@ -74,7 +74,7 @@ P = {
     "mirror_days": 16.0,         # ... fading out by this day
     "tile_shadow": 12.0,         # $ per tile-day opportunity cost in planner scoring
     "hold": False,
-    "melon_cap": 99,
+    "melon_cap": 10,
     "melon_cap_until": 10,
     "alpha": 0.4,
     "plan_task_frac": 0.35,
