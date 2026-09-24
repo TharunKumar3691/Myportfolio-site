@@ -1,0 +1,7 @@
+arc-agi-3/vendor/
+arc-agi-3/environment_files
+arc-agi-3/environment_files/
+__pycache__/
+*.pyc
+logs.log
+recordings/
