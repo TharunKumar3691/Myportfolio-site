@@ -74,6 +74,10 @@ P = {
     "mirror_days": 16.0,         # ... fading out by this day
     "tile_shadow": 12.0,         # $ per tile-day opportunity cost in planner scoring
     "hold": False,
+    "early_phase": True,
+    "early_straw_until": 5,
+    "opp_fert_w": 1.0,
+    "fert_factor": 0.85,
     "melon_cap": 99,
     "melon_cap_until": 10,
     "alpha": 0.4,
@@ -357,7 +361,8 @@ def forecast(s):
         for row in s.opp["tiles"]:
             for t in row:
                 if isinstance(t, dict):
-                    fl = [(d, p, n) for d, p, n in tile_flows(t, s.day, False) if p != "WHEAT"]
+                    fl = [(d, p, n * (P["opp_fert_w"] if p == "FERTILIZER" else 1.0))
+                          for d, p, n in tile_flows(t, s.day, False) if p != "WHEAT"]
                     add_flows(sup, fl, P["opp_weight"])
     # holdings are sold now
     for p, n in s.shed.items():
@@ -502,7 +507,7 @@ def option_eval(s, opt, d0, extra):
         if p == "WHEAT" and n < 0:
             v = max(pval(s, "WHEAT", day, extra), 1)
         elif p == "FERTILIZER":
-            v = pval(s, "FERTILIZER", day, extra) * 0.85
+            v = pval(s, "FERTILIZER", day, extra) * P["fert_factor"]
         else:
             v = pval(s, p, day, extra, n * 0.5)
         value += w * n * v
@@ -553,6 +558,11 @@ def clean_plan(s):
     for pos in list(plan.keys()):
         t = tile_at(s, pos)
         opt = plan[pos]
+        # expire entries that can no longer pay off (too late in the season)
+        d_exec = s.day if s.hour <= 18 else s.day + 1
+        if option_flows(s, opt, d_exec) is None:
+            del plan[pos]
+            continue
         if t == "LOCKED":
             del plan[pos]
             continue
@@ -615,6 +625,17 @@ def adopt_orphans(s):
             n -= 1
 
 
+def early_allowed(s, opt, n_melon):
+    """Consensus opening of top agents: ~10 melons by day 1, then strawberries."""
+    if not P["early_phase"]:
+        return True
+    if s.day <= 1:
+        return opt in ("MELON", "WHEAT", "COW", "SHEEP") and not (opt == "MELON" and n_melon >= 10)
+    if s.day <= P["early_straw_until"]:
+        return opt in ("STRAWBERRY", "COW", "SHEEP", "WHEAT", "GOOSE")
+    return True
+
+
 def run_planner(s, orders, budget):
     if s.step == 0 and P["opening"]:
         opening_plan(s)
@@ -640,6 +661,8 @@ def run_planner(s, orders, budget):
         for opt in OPTIONS:
             if opt == "MELON" and s.day < P["melon_cap_until"] and n_melon >= P["melon_cap"]:
                 continue
+            if not early_allowed(s, opt, n_melon):
+                continue
             r = option_eval(s, opt, s.day, extra)
             if r is None:
                 continue
@@ -660,6 +683,8 @@ def run_planner(s, orders, budget):
             alt = None
             for opt2 in OPTIONS:
                 if opt2 == "MELON" and s.day < P["melon_cap_until"] and n_melon >= P["melon_cap"]:
+                    continue
+                if not early_allowed(s, opt2, n_melon):
                     continue
                 r2 = option_eval(s, opt2, s.day, extra)
                 if r2 is None or r2[0] <= 0 or r2[3] + (wheat_p * 2 if opt2 in ANIMALS else 0) > budget:
@@ -807,6 +832,8 @@ def plant_tasks(s, t, fert_v):
         future = crop_future_units(t, day, fert=fert_active)
         mature = age >= cd["fyd"]
         target = {"WHEAT": 4, "CARROT": 3, "MELON": 6}[crop]
+        if crop == "WHEAT" and P["early_phase"] and pd <= 1:
+            target = 2
         if crop == "WHEAT" and (fert_active or t.get("fertilized_until_day", -1) >= 0):
             target = 5
         if crop == "CARROT" and t.get("fertilized_until_day", -1) >= 0:
