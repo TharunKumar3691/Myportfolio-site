@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 replays/
 *.tar.gz
+results/
+cmp*.txt
+v_*.py
+w_*.py

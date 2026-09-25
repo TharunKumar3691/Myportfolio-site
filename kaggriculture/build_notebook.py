@@ -60,17 +60,21 @@ Evaluation was done locally against replays of the current top-20 leaderboard ag
 """ + agent_src),
     md("## Local validation\nRuns full 720-turn games against the built-in agents and against itself, checks for errors and per-turn time."),
     code("""
-import time, importlib, sys
+import time, importlib.util
 from kaggle_environments import make
 
-sys.path.insert(0, ".")
-import main as agent_module
-importlib.reload(agent_module)
+def load_agent(path="main.py"):
+    # a fresh module per player: each agent keeps its own memory, as in Kaggle's sandbox
+    spec = importlib.util.spec_from_file_location(f"agent_{time.time_ns()}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.agent
 
-for opp in ["starter", "random", agent_module.agent]:
+for opp in ["starter", "random", load_agent()]:
+    me = load_agent()
     env = make("kaggriculture", debug=True)
     t = time.time()
-    env.run([agent_module.agent, opp])
+    env.run([me, opp])
     final = env.steps[-1]
     name = opp if isinstance(opp, str) else "self"
     print(f"vs {name:8s} rewards={[s.reward for s in final]} statuses={[s.status for s in final]} "
@@ -82,6 +86,9 @@ for opp in ["starter", "random", agent_module.agent]:
 !ls -la main.py submission.tar.gz
 """),
 ]
+
+for i, c in enumerate(cells):
+    c["id"] = f"cell-{i}"
 
 nb = {
     "cells": cells,
