@@ -111,7 +111,7 @@ It uses no training, runs on CPU only and needs no internet.
    Accelerator **None**).
 3. When the commit run is complete, open the notebook, click
    **Submit to Competition** and pick `submission.parquet`. From the CLI:
-   `kaggle competitions submit arc-prize-2026-arc-agi-3 -k <user>/arc-agi-3-graph-exploration-agent -f submission.parquet -v <version> -m "graph explorer"`.
+   `kaggle competitions submit arc-prize-2026-arc-agi-3 -k tharunkumar369/arc-agi-3-graph-exploration-agent -f submission.parquet -v <version> -m "graph explorer"`.
 
 ## 5. Where more score would come from
 
