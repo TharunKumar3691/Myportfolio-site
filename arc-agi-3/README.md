@@ -1,5 +1,9 @@
 # ARC Prize 2026 — ARC-AGI-3: Graph-Exploration Agent
 
+> **GPU hybrid LLM notebook:** see [`llm/README.md`](llm/README.md) —
+> `llm/notebook/arc3-hybrid-llm.ipynb` (Duck harness + Qwen3.8-27B-FP8 +
+> graph-explorer opening + fallback). The CPU graph agent below is its fallback.
+
 A Kaggle submission notebook for
 [ARC Prize 2026 — ARC-AGI-3](https://www.kaggle.com/competitions/arc-prize-2026-arc-agi-3).
 It uses no training, runs on CPU only and needs no internet.

@@ -1,0 +1,401 @@
+diff --git a/ARC3-Inference/inference/agent/graph_opening.py b/ARC3-Inference/inference/agent/graph_opening.py
+new file mode 100644
+index 0000000..41e5389
+--- /dev/null
++++ b/ARC3-Inference/inference/agent/graph_opening.py
+@@ -0,0 +1,270 @@
++"""Graph-exploration opening for click-only games (hybrid with the LLM agent).
++
++Before the LLM agent takes over a click-only game, a cheap systematic explorer
++gets a small action budget on the current level. It segments the board into
++single-colour connected components, clicks the most salient untested one in
++the current state, and walks back (BFS over observed transitions) to states
++that still have untested clicks. Step counters / timer bars are learned and
++masked out of the state hash.
++
++On the public games this solves some click puzzles near human efficiency
++(e.g. 14-23 actions), where the LLM needs more. The budget is small because a
++failed opening costs the LLM efficiency on the same level; every transition
++it makes is recorded in the session history, so the LLM starts with evidence
++of what the clicks did.
++"""
++
++from __future__ import annotations
++
++import hashlib
++from collections import deque
++from typing import Optional
++
++import numpy as np
++
++
++def _segments(grid: np.ndarray, ignore: np.ndarray) -> list[dict]:
++    h, w = grid.shape
++    flat = grid.tolist()
++    seen = ignore.tolist()
++    out = []
++    for y in range(h):
++        for x in range(w):
++            if seen[y][x]:
++                continue
++            c = flat[y][x]
++            stack = [(y, x)]
++            seen[y][x] = True
++            cells = []
++            while stack:
++                cy, cx = stack.pop()
++                cells.append((cy, cx))
++                for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
++                    if 0 <= ny < h and 0 <= nx < w and not seen[ny][nx] and flat[ny][nx] == c:
++                        seen[ny][nx] = True
++                        stack.append((ny, nx))
++            ys = [p[0] for p in cells]
++            xs = [p[1] for p in cells]
++            bbox = (min(ys), max(ys), min(xs), max(xs))
++            my = sum(p[0] for p in cells) / len(cells)
++            mx = sum(p[1] for p in cells) / len(cells)
++            py, px = min(cells, key=lambda p: (p[0] - my) ** 2 + (p[1] - mx) ** 2)
++            out.append({"color": c, "area": len(cells), "point": (py, px), "bbox": bbox})
++    return out
++
++
++class _Ticker:
++    """Learns thin bands whose cells change on (almost) every action."""
++
++    def __init__(self) -> None:
++        self.n = 0
++        self.hits: dict[tuple, int] = {}
++        self.mask: Optional[np.ndarray] = None
++        self.version = 0
++
++    def observe(self, prev: np.ndarray, cur: np.ndarray) -> None:
++        if prev.shape != cur.shape:
++            return
++        pts = np.argwhere(prev != cur)
++        if len(pts) == 0:
++            return
++        self.n += 1
++        keys = set()
++        if len(pts) <= 400:
++            remaining = {(int(p[0]), int(p[1])) for p in pts}
++            while remaining:
++                start = remaining.pop()
++                stack, cl = [start], [start]
++                while stack:
++                    y, x = stack.pop()
++                    for dy in (-1, 0, 1):
++                        for dx in (-1, 0, 1):
++                            q = (y + dy, x + dx)
++                            if q in remaining:
++                                remaining.remove(q)
++                                stack.append(q)
++                                cl.append(q)
++                if len(cl) > 8:
++                    continue
++                ys = [p[0] for p in cl]
++                xs = [p[1] for p in cl]
++                if max(ys) - min(ys) < 3:
++                    keys.add(("r", min(ys), max(ys)))
++                if max(xs) - min(xs) < 3:
++                    keys.add(("c", min(xs), max(xs)))
++        for k in keys:
++            self.hits[k] = self.hits.get(k, 0) + 1
++        if self.n < 4:
++            return
++        lines = [k for k, v in self.hits.items() if v >= 4 and v >= 0.5 * self.n]
++        if not lines:
++            return
++        m = np.zeros(cur.shape, dtype=bool)
++        for kind, a, b in lines:
++            if kind == "r":
++                m[a:b + 1, :] = True
++            else:
++                m[:, a:b + 1] = True
++        if self.mask is None or not np.array_equal(m, self.mask):
++            self.mask = m
++            self.version += 1
++
++
++class ClickGraphExplorer:
++    """Stateful click policy: call ``choose(grid)`` then ``observe(grid)``."""
++
++    MAX_CLICKS_PER_STATE = 160
++
++    def __init__(self, seed: int = 0) -> None:
++        self.rng = np.random.default_rng(seed)
++        self.ticker = _Ticker()
++        self.good_colors: dict[int, int] = {}
++        self.reset_graph()
++
++    def reset_graph(self) -> None:
++        self.untested: dict[str, list[tuple[int, int, int]]] = {}
++        self.edges: dict[str, dict[tuple[int, int], str]] = {}
++        self.plan: deque = deque()
++        self.prev_grid: Optional[np.ndarray] = None
++        self.prev_key: Optional[str] = None
++        self.prev_click: Optional[tuple[int, int, int]] = None
++        self._mask_version = self.ticker.version
++
++    def _key(self, grid: np.ndarray) -> str:
++        g = grid
++        m = self.ticker.mask
++        if m is not None and m.shape == grid.shape:
++            g = grid.copy()
++            g[m] = -1
++        return hashlib.blake2b(g.astype(np.int8).tobytes(), digest_size=12).hexdigest()
++
++    def _candidates(self, grid: np.ndarray) -> list[tuple[int, int, int]]:
++        m = self.ticker.mask
++        ignore = m.copy() if m is not None and m.shape == grid.shape else np.zeros(grid.shape, bool)
++        segs = _segments(grid, ignore)
++        if not segs:
++            return []
++        vals, cnts = np.unique(grid[~ignore] if (~ignore).any() else grid, return_counts=True)
++        bg = int(vals[int(np.argmax(cnts))])
++        area_of = dict(zip(vals.tolist(), cnts.tolist()))
++        total = grid.size
++        hud = self._status_bar_segments(segs, grid.shape)
++        scored = []
++        for i, s in enumerate(segs):
++            c, area = s["color"], s["area"]
++            if c == bg:
++                tier = 2 if area <= 64 else 3
++            elif area <= 2:
++                tier = 1
++            elif area <= 256:
++                tier = 0
++            elif area <= total * 0.2:
++                tier = 1
++            else:
++                tier = 3
++            if self.good_colors.get(c, 0) > 0 and tier > 0:
++                tier -= 1
++            if i in hud:
++                tier = 4  # HUD / timer strip: click it only as a last resort
++            score = area_of.get(c, 0) / total + float(self.rng.random()) * 0.02
++            scored.append((tier, score, s))
++        scored.sort(key=lambda t: (t[0], t[1]))
++        out = []
++        for tier, _, s in scored[: self.MAX_CLICKS_PER_STATE]:
++            py, px = s["point"]
++            out.append((int(px), int(py), int(s["color"])))
++        return out
++
++    @staticmethod
++    def _status_bar_segments(segs: list[dict], shape: tuple[int, int], band: int = 3) -> set[int]:
++        """Indices of segments that look like an edge HUD / timer strip.
++
++        A segment inside the `band` cells along an edge is HUD if it is a thin
++        elongated line along that edge, or one of >=3 identical (colour, area)
++        blocks lined up in the same band.
++        """
++        h, w = shape
++        groups: dict[tuple, list[int]] = {}
++        hud: set[int] = set()
++        for i, s in enumerate(segs):
++            y0, y1, x0, x1 = s["bbox"]
++            bh, bw = y1 - y0 + 1, x1 - x0 + 1
++            for edge, inside in (("top", y1 < band), ("bottom", y0 >= h - band),
++                                 ("left", x1 < band), ("right", x0 >= w - band)):
++                if not inside:
++                    continue
++                horizontal = edge in ("top", "bottom")
++                if (horizontal and bw >= 5 * bh) or (not horizontal and bh >= 5 * bw):
++                    hud.add(i)
++                groups.setdefault((edge, s["color"], s["area"]), []).append(i)
++        for members in groups.values():
++            if len(members) >= 3:
++                hud.update(members)
++        return hud
++
++    def observe(self, grid: np.ndarray) -> None:
++        """Record the outcome of the previous click (call after every step)."""
++        grid = np.asarray(grid, dtype=np.int16)
++        if self.prev_grid is not None:
++            self.ticker.observe(self.prev_grid, grid)
++        if self.ticker.version != self._mask_version:
++            # hashes changed meaning: forget the graph, keep learned colours
++            self.untested.clear()
++            self.edges.clear()
++            self.plan.clear()
++            self._mask_version = self.ticker.version
++            self.prev_key = None
++        key = self._key(grid)
++        if self.prev_key is not None and self.prev_click is not None:
++            x, y, c = self.prev_click
++            if key != self.prev_key:
++                self.edges.setdefault(self.prev_key, {})[(x, y)] = key
++                self.good_colors[c] = self.good_colors.get(c, 0) + 1
++
++    def choose(self, grid: np.ndarray) -> tuple[int, int]:
++        """Return the next click as (x, y)."""
++        grid = np.asarray(grid, dtype=np.int16)
++        self.prev_grid = grid
++        key = self._key(grid)
++        if key not in self.untested:
++            self.untested[key] = self._candidates(grid)
++        self.prev_key = key
++        if self.plan:
++            exp_key, xy = self.plan[0]
++            if exp_key == key:
++                self.plan.popleft()
++                self.prev_click = (xy[0], xy[1], int(grid[xy[1], xy[0]]))
++                return xy
++            self.plan.clear()
++        if self.untested[key]:
++            click = self.untested[key].pop(0)
++            self.prev_click = click
++            return click[0], click[1]
++        path = self._bfs(key)
++        if path:
++            self.plan = deque(path)
++            _, xy = self.plan.popleft()
++            self.prev_click = (xy[0], xy[1], int(grid[xy[1], xy[0]]))
++            return xy
++        x, y = int(self.rng.integers(0, grid.shape[1])), int(self.rng.integers(0, grid.shape[0]))
++        self.prev_click = (x, y, int(grid[y, x]))
++        return x, y
++
++    def _bfs(self, src: str) -> Optional[list[tuple[str, tuple[int, int]]]]:
++        prev: dict[str, tuple[str, tuple[int, int]]] = {src: ("", (0, 0))}
++        q = deque([src])
++        while q:
++            k = q.popleft()
++            if k != src and self.untested.get(k):
++                path = []
++                while k != src:
++                    pk, xy = prev[k]
++                    path.append((pk, xy))
++                    k = pk
++                path.reverse()
++                return path
++            for xy, nk in self.edges.get(k, {}).items():
++                if nk not in prev:
++                    prev[nk] = (k, xy)
++                    q.append(nk)
++        return None
+diff --git a/ARC3-Inference/inference/framework/kaggle.py b/ARC3-Inference/inference/framework/kaggle.py
+index c0f1b7a..3eff3a3 100644
+--- a/ARC3-Inference/inference/framework/kaggle.py
++++ b/ARC3-Inference/inference/framework/kaggle.py
+@@ -8,8 +8,8 @@ from dataclasses import dataclass
+ from inference.utils.openai_compat import normalize_provider
+ 
+ DEFAULT_VLLM_WHEELHOUSE_DATASET_SOURCE = "driessmit1/arc3-vllm-h100-wheelhouse-v3"
+-DEFAULT_QWEN_MODEL_DATASET_SOURCE = "driessmit1/vrfai-qwen3-6-27b-fp8-hf-snapshot"
+-DEFAULT_SERVED_MODEL_NAME = "vrfai/Qwen3.6-27B-FP8"
++DEFAULT_QWEN_MODEL_DATASET_SOURCE = "jakobbrggen/qwen3-8-27b-fp8-hf-snapshot"
++DEFAULT_SERVED_MODEL_NAME = "Qwen/Qwen3.8-27B-FP8"
+ DEFAULT_VLLM_PORT = 1234
+ DEFAULT_VLLM_MAX_MODEL_LEN = 65536
+ DEFAULT_VLLM_TENSOR_PARALLEL_SIZE = 1
+@@ -334,6 +334,8 @@ def start_vllm_server() -> None:
+         'qwen3',
+         '--max-model-len',
+         str(VLLM_MAX_MODEL_LEN),
++        '--kv-cache-dtype',
++        'fp8',
+     ]
+     print('Starting vLLM OpenAI server:', ' '.join(cmd), flush=True)
+     process = subprocess.Popen(cmd, env=vllm_env(), stdout=log_handle, stderr=subprocess.STDOUT, text=True)
+diff --git a/ARC3-Inference/inference/framework/solver.py b/ARC3-Inference/inference/framework/solver.py
+index 0b69d62..a4d3ae8 100644
+--- a/ARC3-Inference/inference/framework/solver.py
++++ b/ARC3-Inference/inference/framework/solver.py
+@@ -6,7 +6,9 @@ import asyncio
+ import contextlib
+ import copy
+ import functools
++import hashlib
+ import html
++import logging
+ import json
+ import os
+ import re
+@@ -20,6 +22,7 @@ from pathlib import Path
+ from typing import Any, Callable
+ 
+ import arcengine
++import numpy as np
+ import taaf.game
+ from taaf.solver import Solver
+ 
+@@ -55,6 +58,8 @@ from inference.utils.viewer_artifacts import (
+ 
+ AnalyzerFactory = Callable[[taaf.game.Game, int], Any]
+ 
++log = logging.getLogger(__name__)
++
+ ANALYZER_RETRY_BACKOFF_SECONDS = 1.0
+ DEFAULT_CANCEL_DRAIN_TIMEOUT_SECONDS = 120.0
+ _LOCAL_SERVER_PROCESS_ENV_KEYS = (
+@@ -271,6 +276,7 @@ class _HarnessGameSession:
+         self.write_runtime_state()
+         self._append_initial_viewer_event()
+         self.write_viewer_payload()
++        self._graph_opening()
+         try:
+             retry_analysis_step: int | None = None
+             while not self.should_stop():
+@@ -337,6 +343,61 @@ class _HarnessGameSession:
+             self._write_analysis_html()
+             self.write_viewer_payload()
+ 
++    def _graph_opening(self) -> None:
++        """Hybrid: let a cheap graph explorer open click-only games.
++
++        Controlled by HYBRID_GRAPH_OPENING (default on) and
++        HYBRID_GRAPH_OPENING_BUDGET (default 24 actions). It only runs on the
++        first level of games whose sole action is ACTION6, and stops at the
++        first level completion, game over, or when the budget is spent. Any
++        error hands control to the LLM loop unchanged.
++        """
++        if os.environ.get("HYBRID_GRAPH_OPENING", "1").strip().lower() in {"0", "false", "no", "off"}:
++            return
++        try:
++            budget = int(os.environ.get("HYBRID_GRAPH_OPENING_BUDGET", "24"))
++        except ValueError:
++            budget = 24
++        if budget <= 0 or _engine_action_names(self.game) != ["ACTION6"]:
++            return
++        try:
++            from inference.agent.graph_opening import ClickGraphExplorer
++
++            seed = int(hashlib.md5(str(self.game.game_run.game_id).encode()).hexdigest()[:8], 16)
++            explorer = ClickGraphExplorer(seed=seed)
++            start_completed = int(self.game.current_state.levels_completed)
++            used = 0
++            while used < budget and not self.should_stop():
++                if _is_engine_game_over(self.game):
++                    break
++                if int(self.game.current_state.levels_completed) != start_completed:
++                    break
++                if _engine_action_names(self.game) != ["ACTION6"]:
++                    break
++                grid = np.asarray(_grid_from_state(self.game.current_state), dtype=np.int16)
++                if grid.ndim != 2 or grid.size == 0:
++                    break
++                x, y = explorer.choose(grid)
++                action = arcengine.ActionInput(
++                    id=arcengine.GameAction.ACTION6, data={"x": int(x), "y": int(y)}
++                )
++                payload = self._execute_action(
++                    action, batch_index=1, batch_size=1, generated_tokens=0
++                )
++                used += 1
++                explorer.observe(
++                    np.asarray(_grid_from_state(self.game.current_state), dtype=np.int16)
++                )
++                if payload.get("level_completed") or payload.get("run_complete") or payload.get("game_over"):
++                    break
++            log.info(
++                "graph opening: game=%s used=%d levels %d->%d",
++                self.game.game_run.game_id, used, start_completed,
++                int(self.game.current_state.levels_completed),
++            )
++        except Exception as exc:  # never let the opening break the LLM run
++            log.warning("graph opening failed (%s: %s); continuing with LLM", type(exc).__name__, exc)
++
+     def _finish_if_needed(self) -> None:
+         run = self.game.game_run
+         if run is not None and run.final_score is None:
